@@ -257,7 +257,7 @@ def compute_distribution_compare_detailed(
                 "等级": level,
                 "参考等级占比": ref_ratio,
                 "模拟等级占比": sim_ratio,
-                "差异": abs(sim_ratio - ref_ratio),
+                "差异": sim_ratio - ref_ratio,
             }
         )
 
@@ -312,6 +312,153 @@ def plot_heatmap(corr: pd.DataFrame) -> alt.Chart:
         color=alt.condition(alt.datum.相关系数 > 0.5, alt.value("white"), alt.value("black")),
     )
     return (heatmap + text).properties(width=400, height=400)
+
+
+def analyze_single_risk_level(df: pd.DataFrame, selected_level: str, numeric_cols: list) -> dict:
+    """对单个风险等级进行多维度数据分析。
+
+    Args:
+        df: 原始数据框
+        selected_level: 选择的参考等级
+        numeric_cols: 数值列名列表
+
+    Returns:
+        包含分析结果的字典
+    """
+    # 筛选指定等级的数据
+    level_data = df[df["参考等级(电网)"] == selected_level].copy()
+
+    if len(level_data) == 0:
+        return {"error": f"没有找到参考等级为'{selected_level}'的数据"}
+
+    analysis_results = {
+        "data_count": len(level_data),
+        "percentage": len(level_data) / len(df) * 100,
+        "numeric_stats": level_data[numeric_cols].describe(),
+        "correlation": level_data[numeric_cols].corr(),
+    }
+
+    # 如果有作业性质列，分析作业性质分布
+    if "作业性质" in level_data.columns:
+        analysis_results["work_type_dist"] = level_data["作业性质"].value_counts(normalize=True)
+
+    # 如果有是否跃迁列，分析跃迁情况
+    if "是否跃迁" in level_data.columns:
+        analysis_results["leap_dist"] = level_data["是否跃迁"].value_counts(normalize=True)
+        analysis_results["leap_risk_stats"] = level_data.groupby("是否跃迁")["综合风险值"].describe()
+
+    return analysis_results
+
+
+def plot_single_level_distribution(
+    level_data: pd.DataFrame, numeric_cols: list, selected_level: str
+) -> alt.Chart:
+    """绘制单个等级下各维度风险值的分布图。"""
+    # 转换为长格式
+    long_df = level_data[numeric_cols].melt(var_name="风险维度", value_name="风险值")
+
+    # 定义颜色映射
+    color_mapping = {
+        "综合风险值": "#d62728",
+        "动态因子": "#ff7f0e",
+        "人员风险值": "#2ca02c",
+        "管理风险值": "#1f77b4",
+        "设备风险值": "#9467bd",
+        "方法风险值": "#8c564b",
+        "环境风险值": "#e377c2",
+    }
+
+    # 创建箱线图
+    chart = (
+        alt.Chart(long_df)
+        .mark_boxplot(size=50)
+        .encode(
+            x=alt.X("风险维度:N", title="风险维度", axis=alt.Axis(labelAngle=-45)),
+            y=alt.Y("风险值:Q", title="风险值"),
+            color=alt.Color(
+                "风险维度:N",
+                scale=alt.Scale(domain=list(color_mapping.keys()), range=list(color_mapping.values())),
+                legend=None,
+            ),
+        )
+        .properties(width=600, height=300, title=f"'{selected_level}'等级下各维度风险值分布")
+    )
+
+    return chart
+
+
+def plot_single_level_radar(
+    level_data: pd.DataFrame, numeric_cols: list, selected_level: str
+) -> alt.Chart:
+    """绘制单个等级下风险维度的雷达图（使用极坐标近似）。"""
+    # 计算各维度的平均值和标准化
+    means = level_data[numeric_cols].mean()
+
+    # 标准化到0-1范围
+    normalized_means = (means - means.min()) / (means.max() - means.min())
+
+    # 创建雷达图数据
+    radar_data = pd.DataFrame(
+        {
+            "维度": normalized_means.index,
+            "值": normalized_means.values,
+            "角度": [i * 360 / len(normalized_means) for i in range(len(normalized_means))],
+        }
+    )
+
+    # 添加第一个点到末尾以闭合图形
+    radar_data = pd.concat([radar_data, radar_data.iloc[[0]]], ignore_index=True)
+
+    # 创建极坐标图
+    chart = (
+        alt.Chart(radar_data)
+        .mark_line(point=True, strokeWidth=3)
+        .encode(
+            theta=alt.Theta("角度:Q", scale=alt.Scale(range=[0, 6.28])),
+            radius=alt.Radius("值:Q", scale=alt.Scale(range=[0, 100])),
+            color=alt.value("#1f77b4"),
+            tooltip=["维度:N", "值:Q"],
+        )
+        .resolve_scale(radius="independent")
+        .properties(width=300, height=300, title=f"'{selected_level}'等级风险维度雷达图")
+    )
+
+    return chart
+
+
+def plot_single_level_comparison(df: pd.DataFrame, selected_level: str, numeric_cols: list) -> alt.Chart:
+    """绘制选定等级与其他等级的对比图。"""
+    # 计算各等级的平均值
+    level_means = df.groupby("参考等级(电网)")[numeric_cols].mean().reset_index()
+
+    # 转换为长格式
+    long_df = level_means.melt(
+        id_vars=["参考等级(电网)"], value_vars=numeric_cols, var_name="风险维度", value_name="平均值"
+    )
+
+    # 添加是否为选定等级的标识
+    long_df["是否选中"] = long_df["参考等级(电网)"] == selected_level
+
+    # 创建对比图
+    chart = (
+        alt.Chart(long_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("参考等级(电网):O", title="参考等级", sort=RISK_LEVEL_ORDER),
+            y=alt.Y("平均值:Q", title="平均值"),
+            color=alt.Color(
+                "是否选中:N",
+                scale=alt.Scale(range=["lightgray", "#d62728"]),
+                legend=alt.Legend(title="等级类型", values=["其他等级", "选中等级"]),
+            ),
+            facet=alt.Facet("风险维度:N", columns=3, title="风险维度对比"),
+            tooltip=["参考等级(电网):N", "风险维度:N", "平均值:Q"],
+        )
+        .properties(width=120, height=100, title=f"'{selected_level}'等级与其他等级的风险维度对比")
+        .resolve_scale(y="independent")
+    )
+
+    return chart
 
 
 def main():
@@ -433,10 +580,25 @@ def main():
             st.altair_chart(plot_distribution_compare_detailed(compare_df), use_container_width=True)
 
             # 显示详细对比数据
+            def style_difference(val):
+                """根据差异值应用颜色标记"""
+                if val > 0.2:  # 相差超过20%
+                    return "background-color: #ffcccc"  # 红色
+                elif val > 0.1:  # 相差超过10%
+                    return "background-color: #fff2cc"  # 黄色
+                elif val > 0:  # sim_ratio大于ref_ratio
+                    return "background-color: #d4edda"  # 成功色（绿色）
+                elif val < -0.2:  # 相差超过-20%
+                    return "background-color: #ffcccc"  # 红色
+                elif val < -0.1:  # 相差超过-10%
+                    return "background-color: #fff2cc"  # 黄色
+                else:
+                    return ""  # 无特殊颜色
+
             st.dataframe(
                 compare_df.style.format(
                     {"参考等级占比": "{:.2%}", "模拟等级占比": "{:.2%}", "差异": "{:.2%}"}
-                )
+                ).map(style_difference, subset=["差异"])
             )
 
             # 计算总体差异
@@ -478,6 +640,162 @@ def main():
         if "是否跃迁" in df.columns:
             leap_stats = df.groupby("是否跃迁")["综合风险值"].describe().T
             st.dataframe(leap_stats)
+
+        # ---------- 5. 单个风险层级多维度分析 ----------
+        st.header("五、单个风险层级多维度分析")
+        st.write(
+            "选择一个特定的参考等级，深入分析该等级下的数据特征、风险维度分布、\n"
+            "相关性模式以及与其他等级的对比情况。"
+        )
+
+        # 获取可用的参考等级
+        available_levels = df["参考等级(电网)"].unique()
+        available_levels = [level for level in RISK_LEVEL_ORDER if level in available_levels]
+
+        # 等级选择器
+        selected_level = st.selectbox(
+            "请选择要分析的参考等级：",
+            available_levels,
+            index=0,
+            help="选择一个参考等级进行详细的多维度分析",
+        )
+
+        if selected_level:
+            # 进行单等级分析
+            analysis_results = analyze_single_risk_level(df, selected_level, numeric_cols)
+
+            if "error" in analysis_results:
+                st.error(analysis_results["error"])
+            else:
+                # 筛选该等级的数据
+                level_data = df[df["参考等级(电网)"] == selected_level]
+
+                # 基本统计信息
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(
+                        "数据量",
+                        f"{analysis_results['data_count']:,}",
+                        help=f"'{selected_level}'等级的数据条数",
+                    )
+                with col2:
+                    st.metric(
+                        "占比",
+                        f"{analysis_results['percentage']:.1f}%",
+                        help=f"'{selected_level}'等级在总数据中的占比",
+                    )
+                with col3:
+                    avg_risk = level_data["综合风险值"].mean()
+                    st.metric(
+                        "平均综合风险值",
+                        f"{avg_risk:.2f}",
+                        help=f"'{selected_level}'等级的平均综合风险值",
+                    )
+
+                # 风险维度分布分析
+                st.subheader(f"'{selected_level}'等级风险维度分布")
+
+                # 创建两列布局
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # 箱线图显示分布
+                    distribution_chart = plot_single_level_distribution(
+                        level_data, numeric_cols, selected_level
+                    )
+                    st.altair_chart(distribution_chart, use_container_width=True)
+
+                with col2:
+                    # 雷达图显示维度特征
+                    radar_chart = plot_single_level_radar(level_data, numeric_cols, selected_level)
+                    st.altair_chart(radar_chart, use_container_width=True)
+
+                # 详细统计表
+                st.subheader("详细统计信息")
+                st.dataframe(
+                    analysis_results["numeric_stats"].style.format("{:.3f}"), use_container_width=True
+                )
+
+                # 相关性分析
+                st.subheader(f"'{selected_level}'等级内部相关性分析")
+                level_corr_chart = plot_heatmap(analysis_results["correlation"])
+                st.altair_chart(level_corr_chart, use_container_width=True)
+
+                # 与其他等级对比
+                st.subheader("与其他等级对比")
+                comparison_chart = plot_single_level_comparison(df, selected_level, numeric_cols)
+                st.altair_chart(comparison_chart, use_container_width=True)
+
+                # 作业性质分析（如果存在）
+                if "work_type_dist" in analysis_results:
+                    st.subheader(f"'{selected_level}'等级作业性质分布")
+                    work_dist_df = analysis_results["work_type_dist"].reset_index()
+                    work_dist_df.columns = ["作业性质", "占比"]
+
+                    work_chart = (
+                        alt.Chart(work_dist_df)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("作业性质:N", title="作业性质"),
+                            y=alt.Y("占比:Q", title="占比", axis=alt.Axis(format="%")),
+                            color=alt.Color("作业性质:N", legend=None),
+                            tooltip=["作业性质:N", alt.Tooltip("占比:Q", format=".1%")],
+                        )
+                        .properties(width=400, height=250, title=f"'{selected_level}'等级作业性质分布")
+                    )
+                    st.altair_chart(work_chart, use_container_width=True)
+
+                    # 显示详细数据
+                    st.dataframe(work_dist_df.style.format({"占比": "{:.2%}"}), use_container_width=True)
+
+                # 跃迁分析（如果存在）
+                if "leap_dist" in analysis_results:
+                    st.subheader(f"'{selected_level}'等级跃迁情况分析")
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.write("**跃迁分布：**")
+                        leap_dist_df = analysis_results["leap_dist"].reset_index()
+                        leap_dist_df.columns = ["是否跃迁", "占比"]
+                        st.dataframe(
+                            leap_dist_df.style.format({"占比": "{:.2%}"}), use_container_width=True
+                        )
+
+                    with col2:
+                        st.write("**跃迁与综合风险值关系：**")
+                        leap_risk_stats = analysis_results["leap_risk_stats"]
+                        st.dataframe(leap_risk_stats.style.format("{:.3f}"), use_container_width=True)
+
+                # 数据洞察
+                st.subheader("数据洞察")
+                insights = []
+
+                # 风险值洞察
+                max_risk_dim = level_data[numeric_cols[1:]].mean().idxmax()  # 排除综合风险值
+                min_risk_dim = level_data[numeric_cols[1:]].mean().idxmin()
+                insights.append(f"• **主要风险来源**：{max_risk_dim}的平均值最高")
+                insights.append(f"• **相对优势维度**：{min_risk_dim}的平均值最低")
+
+                # 相关性洞察
+                corr_matrix = analysis_results["correlation"]
+                high_corr_pairs = []
+                for i in range(len(corr_matrix.columns)):
+                    for j in range(i + 1, len(corr_matrix.columns)):
+                        corr_val = corr_matrix.iloc[i, j]
+                        if abs(corr_val) > 0.7:  # 高相关性阈值
+                            high_corr_pairs.append(
+                                (corr_matrix.columns[i], corr_matrix.columns[j], corr_val)
+                            )
+
+                if high_corr_pairs:
+                    insights.append("• **高相关性维度**：")
+                    for dim1, dim2, corr_val in high_corr_pairs[:3]:  # 最多显示3个
+                        insights.append(f"  - {dim1} 与 {dim2}：相关系数 {corr_val:.2f}")
+
+                # 显示洞察
+                for insight in insights:
+                    st.write(insight)
 
 
 if __name__ == "__main__":
