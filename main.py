@@ -319,18 +319,16 @@ def main():
     st.title("风险数据分析仪表盘")
     st.write(
         "利用本应用可以上传Excel文件，进行风险等级占比分析、数值指标与参考等级关系分析、\n"
-        "并通过自定义阈值生成模拟风险等级，与电网参考等级进行对比。同时提供相关性分析和其他补充分析。"
+        "并通过自定义阈值生成模拟风险等级，与电网参考等级进行对比。"
     )
 
     uploaded_file = st.file_uploader("请选择Excel文件进行分析", type=["xls", "xlsx"])
     if uploaded_file is not None:
         # 提醒用户，文件上传后将被读取为BytesIO
-        st.info("文件已上传，请等待读取……")
-        # 读取数据
-        df = load_data(uploaded_file)
-        st.success("数据读取成功！")
-        st.subheader("数据预览")
-        st.dataframe(df.head())
+        with st.info("文件已上传，请等待读取……"):
+            # 读取数据
+            df = load_data(uploaded_file)
+            st.success("数据读取成功！")
 
         # 指定数值列，重点关注综合风险值
         numeric_cols = [
@@ -390,11 +388,6 @@ def main():
         )
         st.altair_chart(comprehensive_risk_chart, use_container_width=True)
 
-        st.write(
-            "从上图可以看出，综合风险值与参考等级呈现明显的正相关关系，\n"
-            "高等级组的综合风险值显著高于低等级组，验证了风险评估模型的有效性。"
-        )
-
         st.subheader("散点图分析")
         # 默认显示综合风险值相关的散点图
         col1, col2 = st.columns(2)
@@ -406,10 +399,7 @@ def main():
 
         # ---------- 3. 模拟风险等级生成与对比 ----------
         st.header("三、模拟风险等级与参考等级对比")
-        st.write(
-            "通过调整综合风险值的各等级划分阈值，生成模拟风险等级，并与电网参考等级进行对比分析。\n"
-            "这有助于优化风险等级划分标准，提高评估准确性。"
-        )
+        st.write("通过调整综合风险值的各等级划分阈值，生成模拟风险等级，并与电网参考等级进行对比分析。\n")
 
         # 获取综合风险值的统计信息
         risk_min = float(df["综合风险值"].min())
@@ -471,14 +461,9 @@ def main():
             )
 
         # ---------- 4. 补充分析 ----------
-        st.header("四、补充数据分析")
-        st.subheader("相关性热图")
+        st.header("四、相关性热图")
         corr = compute_correlation(df, numeric_cols)
         st.altair_chart(plot_heatmap(corr), use_container_width=True)
-        st.write(
-            "从相关性热图可以看到综合风险值与各维度风险值均呈现正相关，其中管理风险值相关系数最高，\n"
-            "人员风险值、设备风险值也具有较强关联。动态因子与环境风险值的相关性相对较高。"
-        )
 
         # 其他分析：作业性质对参考等级和综合风险的影响
         st.subheader("作业性质与风险特征")
@@ -488,16 +473,12 @@ def main():
             work_type_dist = work_type_dist.reindex(columns=RISK_LEVEL_ORDER, fill_value=0)
             st.write("各作业性质对应的参考等级占比：")
             st.dataframe(work_type_dist.style.format("{:.2%}"))
-            st.write(
-                "营销类作业几乎全部属于低风险，基建作业中低风险占比较高而无高风险项目；生产作业中高风险占比较低。"
-            )
 
         # 是否跃迁与风险比较
         st.subheader("是否跃迁与综合风险值")
         if "是否跃迁" in df.columns:
             leap_stats = df.groupby("是否跃迁")["综合风险值"].describe().T
             st.dataframe(leap_stats)
-            st.write("从统计结果可以看出，存在跃迁的作业平均综合风险值显著高于未跃迁作业。")
 
 
 if __name__ == "__main__":
